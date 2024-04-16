@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2024 u-blox
+ * Copyright 2019-2023 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -50,11 +50,6 @@
 
 #include "u_ubx_protocol.h"
 
-#include "u_linked_list.h"
-
-#include "u_geofence.h"
-#include "u_geofence_shared.h"
-
 #include "u_gnss_module_type.h"
 #include "u_gnss_type.h"
 #include "u_gnss_private.h"
@@ -63,8 +58,6 @@
 #include "u_gnss_cfg_private.h"
 #include "u_gnss_msg.h"
 #include "u_gnss_msg_private.h"
-#include "u_gnss_geofence.h"
-#include "u_geofence_shared.h"
 #include "u_gnss_pos.h"
 
 /* ----------------------------------------------------------------
@@ -126,7 +119,7 @@ typedef struct {
 /** Table to convert U_GNSS_RRLP_MODE_MEASxxx into a message class
  * of UBX-RXM-MEASxxx.
  */
-static const int32_t gRrlpModeToUbxRxmMessageClass[] = {
+int32_t gRrlpModeToUbxRxmMessageClass[] = {
     0x14, // UBX-RXM-MEASX
     0x86, // UBX_RXM_MEAS50
     0x84, // UBX_RXM_MEAS20
@@ -144,7 +137,6 @@ static int32_t posDecode(char *pMessage,
                          int32_t *pLatitudeX1e7, int32_t *pLongitudeX1e7,
                          int32_t *pAltitudeMillimetres,
                          int32_t *pRadiusMillimetres,
-                         int32_t *pAltitudeUncertaintyMillimetres,
                          int32_t *pSpeedMillimetresPerSecond,
                          int32_t *pSvs, int64_t *pTimeUtc, bool printIt)
 {
@@ -190,7 +182,7 @@ static int32_t posDecode(char *pMessage,
         if (printIt) {
             uPortLog("U_GNSS_POS: %dD fix achieved.\n", *(pMessage + 20));
         }
-        y = (int32_t) * (pMessage + 23);
+        y =  uUbxProtocolUint32Decode(pMessage + 16);
         if (printIt) {
             uPortLog("U_GNSS_POS: satellite(s) = %d.\n", y);
         }
@@ -213,7 +205,8 @@ static int32_t posDecode(char *pMessage,
         }
         y = INT_MIN;
         if (*(pMessage + 20) == 0x03) {
-            y = (int32_t) uUbxProtocolUint32Decode(pMessage + 36);
+            //y = (int32_t) uUbxProtocolUint32Decode(pMessage + 26);
+            y= (int32_t) * (pMessage + 20);
             if (printIt) {
                 uPortLog("U_GNSS_POS: altitude = %d (mm).\n", y);
             }
@@ -221,21 +214,14 @@ static int32_t posDecode(char *pMessage,
         if (pAltitudeMillimetres != NULL) {
             *pAltitudeMillimetres = y;
         }
-        y = (int32_t) uUbxProtocolUint32Decode(pMessage + 40);
+        y = (int32_t) uUbxProtocolUint32Decode(pMessage + 21);
         if (printIt) {
             uPortLog("U_GNSS_POS: radius = %d (mm).\n", y);
         }
         if (pRadiusMillimetres != NULL) {
             *pRadiusMillimetres = y;
         }
-        y = (int32_t) uUbxProtocolUint32Decode(pMessage + 44);
-        if (printIt) {
-            uPortLog("U_GNSS_POS: altitude uncertainty = %d (mm).\n", y);
-        }
-        if (pAltitudeUncertaintyMillimetres != NULL) {
-            *pAltitudeUncertaintyMillimetres = y;
-        }
-        y = (int32_t) uUbxProtocolUint32Decode(pMessage + 60);
+        y = (int32_t) uUbxProtocolUint32Decode(pMessage + 16);
         if (printIt) {
             uPortLog("U_GNSS_POS: speed = %d (mm/s).\n", y);
         }
@@ -254,7 +240,6 @@ static int32_t posGet(uGnssPrivateInstance_t *pInstance,
                       int32_t *pLatitudeX1e7, int32_t *pLongitudeX1e7,
                       int32_t *pAltitudeMillimetres,
                       int32_t *pRadiusMillimetres,
-                      int32_t *pAltitudeUncertaintyMillimetres,
                       int32_t *pSpeedMillimetresPerSecond,
                       int32_t *pSvs, int64_t *pTimeUtc, bool printIt)
 {
@@ -271,7 +256,6 @@ static int32_t posGet(uGnssPrivateInstance_t *pInstance,
                               pLatitudeX1e7, pLongitudeX1e7,
                               pAltitudeMillimetres,
                               pRadiusMillimetres,
-                              pAltitudeUncertaintyMillimetres,
                               pSpeedMillimetresPerSecond,
                               pSvs, pTimeUtc, printIt);
     } else {
@@ -295,7 +279,6 @@ static void posGetTask(void *pParameter)
     int32_t longitudeX1e7 = INT_MIN;
     int32_t altitudeMillimetres = INT_MIN;
     int32_t radiusMillimetres = -1;
-    int32_t altitudeUncertaintyMillimetres = 0;
     int32_t speedMillimetresPerSecond = INT_MIN;
     int32_t svs = -1;
     int64_t timeUtc = -1;
@@ -319,7 +302,6 @@ static void posGetTask(void *pParameter)
                            &longitudeX1e7,
                            &altitudeMillimetres,
                            &radiusMillimetres,
-                           &altitudeUncertaintyMillimetres,
                            &speedMillimetresPerSecond,
                            &svs,
                            &timeUtc, false);
@@ -332,20 +314,6 @@ static void posGetTask(void *pParameter)
     taskParameters.pCallback(taskParameters.gnssHandle, errorCode, latitudeX1e7,
                              longitudeX1e7, altitudeMillimetres, radiusMillimetres,
                              speedMillimetresPerSecond, svs, timeUtc);
-    if (errorCode == 0) {
-        // As well as the above, test the position against any
-        // fences associated with the instance, which may result
-        // in further callbacks being called and if GEODESIC is
-        // employed, may consume an additional ~5 kbytes of stack
-        uGeofenceContextTest(taskParameters.gnssHandle,
-                             (uGeofenceContext_t *) taskParameters.pInstance->pFenceContext,
-                             U_GEOFENCE_TEST_TYPE_NONE, false,
-                             ((int64_t) latitudeX1e7) * 100,
-                             ((int64_t) longitudeX1e7) * 100,
-                             altitudeMillimetres,
-                             radiusMillimetres,
-                             altitudeUncertaintyMillimetres);
-    }
 
     U_PORT_MUTEX_UNLOCK(taskParameters.pInstance->posMutex);
 
@@ -365,7 +333,6 @@ static void messageCallback(uDeviceHandle_t gnssHandle,
     int32_t longitudeX1e7 = INT_MIN;
     int32_t altitudeMillimetres = INT_MIN;
     int32_t radiusMillimetres = -1;
-    int32_t altitudeUncertaintyMillimetres = 0;
     int32_t speedMillimetresPerSecond = INT_MIN;
     int32_t svs = -1;
     int64_t timeUtc = -1;
@@ -385,7 +352,6 @@ static void messageCallback(uDeviceHandle_t gnssHandle,
                                       &latitudeX1e7, &longitudeX1e7,
                                       &altitudeMillimetres,
                                       &radiusMillimetres,
-                                      &altitudeUncertaintyMillimetres,
                                       &speedMillimetresPerSecond,
                                       &svs, &timeUtc, false);
         // Call the callback
@@ -401,20 +367,6 @@ static void messageCallback(uDeviceHandle_t gnssHandle,
                                                 speedMillimetresPerSecond,
                                                 svs,
                                                 timeUtc);
-        if (errorCodeOrLength == 0) {
-            // As well as the above, test the position against any
-            // fences associated with the instance, which may result
-            // in further callbacks being called and if GEODESIC is
-            // employed, may consume an additional ~5 kbytes of stack
-            uGeofenceContextTest(gnssHandle,
-                                 (uGeofenceContext_t *) pInstance->pFenceContext,
-                                 U_GEOFENCE_TEST_TYPE_NONE, false,
-                                 ((int64_t) latitudeX1e7) * 100,
-                                 ((int64_t) longitudeX1e7) * 100,
-                                 altitudeMillimetres,
-                                 radiusMillimetres,
-                                 altitudeUncertaintyMillimetres);
-        }
     }
 }
 
@@ -442,11 +394,6 @@ int32_t uGnssPosGet(uDeviceHandle_t gnssHandle,
 {
     int32_t errorCode = (int32_t) U_ERROR_COMMON_NOT_INITIALISED;
     uGnssPrivateInstance_t *pInstance;
-    int32_t latitudeX1e7 = INT_MIN;
-    int32_t longitudeX1e7 = INT_MIN;
-    int32_t altitudeMillimetres = INT_MIN;
-    int32_t radiusMillimetres = -1;
-    int32_t altitudeUncertaintyMillimetres = 0;
 #ifdef U_CFG_SARA_R5_M8_WORKAROUND
     uint8_t message[4]; // Room for the body of a UBX-CFG-ANT message
 #endif
@@ -484,39 +431,12 @@ int32_t uGnssPosGet(uDeviceHandle_t gnssHandle,
                     ((pKeepGoingCallback != NULL) && pKeepGoingCallback(gnssHandle)))) {
                 // Call posGet() to do the work
                 errorCode = posGet(pInstance,
-                                   &latitudeX1e7,
-                                   &longitudeX1e7,
-                                   &altitudeMillimetres,
-                                   &radiusMillimetres,
-                                   &altitudeUncertaintyMillimetres,
+                                   pLatitudeX1e7,
+                                   pLongitudeX1e7,
+                                   pAltitudeMillimetres,
+                                   pRadiusMillimetres,
                                    pSpeedMillimetresPerSecond,
                                    pSvs, pTimeUtc, true);
-                if (errorCode == 0) {
-                    // As well as the above, test the position against any
-                    // fences associated with the instance, which may result
-                    // in further callbacks being called and if GEODESIC is
-                    // employed, may consume an additional ~5 kbytes of stack
-                    uGeofenceContextTest(gnssHandle,
-                                         (uGeofenceContext_t *) pInstance->pFenceContext,
-                                         U_GEOFENCE_TEST_TYPE_NONE, false,
-                                         ((int64_t) latitudeX1e7) * 100,
-                                         ((int64_t) longitudeX1e7) * 100,
-                                         altitudeMillimetres,
-                                         radiusMillimetres,
-                                         altitudeUncertaintyMillimetres);
-                }
-                if (pLatitudeX1e7 != NULL) {
-                    *pLatitudeX1e7 = latitudeX1e7;
-                }
-                if (pLongitudeX1e7 != NULL) {
-                    *pLongitudeX1e7 = longitudeX1e7;
-                }
-                if (pAltitudeMillimetres != NULL) {
-                    *pAltitudeMillimetres = altitudeMillimetres;
-                }
-                if (pRadiusMillimetres != NULL) {
-                    *pRadiusMillimetres = radiusMillimetres;
-                }
             }
         }
 
@@ -553,9 +473,6 @@ int32_t uGnssPosGetStart(uDeviceHandle_t gnssHandle,
         pInstance = pUGnssPrivateGetInstance(gnssHandle);
         if ((pInstance != NULL) && (pCallback != NULL)) {
             errorCode = (int32_t) U_ERROR_COMMON_NO_MEMORY;
-            if (pInstance->posTaskFlags & U_GNSS_POS_TASK_FLAG_HAS_RUN) {
-                uGnssPrivateCleanUpPosTask(pInstance);
-            }
             if (pInstance->posTaskFlags == 0) {
                 errorCode = (int32_t) U_ERROR_COMMON_SUCCESS;
                 // Create a mutex to allow us to monitor whether the
@@ -667,15 +584,17 @@ int32_t uGnssPosGetStreamedStart(uDeviceHandle_t gnssHandle,
     int32_t errorCode = (int32_t) U_ERROR_COMMON_NOT_INITIALISED;
     uGnssPrivateInstance_t *pInstance;
     uGnssPrivateStreamedPosition_t *pStreamedPosition;
-    int32_t measurementPeriodMs = -1;
-    int32_t navigationCount = -1;
+    int32_t measurementPeriodMs;
+    int32_t navigationCount;
     int32_t messageRate = -1;
     uGnssPrivateMessageId_t ubxNavPvtMessageId =  {.type = U_GNSS_PROTOCOL_UBX,
                                                    .id.ubx = 0x0107
                                                   };
-    uint32_t keyId;
+    uint32_t keyId = U_GNSS_CFG_VAL_KEY_ID_MSGOUT_UBX_NAV_PVT_I2C_U1;
     uGnssCfgVal_t *pCfgVal = NULL;
-    uGnssCfgVal_t cfgVal;
+    uGnssCfgVal_t cfgVal = {.keyId = U_GNSS_CFG_VAL_KEY_ID_MSGOUT_UBX_NAV_PVT_I2C_U1,
+                            .value = 1
+                           };
 #ifdef U_CFG_SARA_R5_M8_WORKAROUND
     uint8_t message[4]; // Room for the body of a UBX-CFG-ANT message
 #endif
@@ -689,129 +608,116 @@ int32_t uGnssPosGetStreamedStart(uDeviceHandle_t gnssHandle,
         if ((pInstance != NULL) && (pCallback != NULL) && (rateMs != 0)) {
             errorCode = (int32_t) U_ERROR_COMMON_NOT_SUPPORTED;
             if (uGnssPrivateGetStreamType(pInstance->transportType) >= 0) {
-                // The keyId for the msgout rates is port dependent but, neatly,
-                // it is always the I2C value plus the port number (uGnssPort_t)
-                keyId = U_GNSS_CFG_VAL_KEY_ID_MSGOUT_UBX_NAV_PVT_I2C_U1 + pInstance->portNumber;
-                cfgVal.keyId = keyId;
-                cfgVal.value = 1;
-                bool temp = pInstance->printUbxMessages;
-                pInstance->printUbxMessages = true;
-                pStreamedPosition = pInstance->pStreamedPosition;
-                if (pStreamedPosition != NULL) {
-                    // Stop the previous streamed position
-                    uGnssPrivateCleanUpStreamedPos(pInstance);
-                }
-                // Malloc memory to copy the parameters into:
-                // this memory will be free'd when
-                // uGnssPosGetStreamedStop() is called
                 errorCode = (int32_t) U_ERROR_COMMON_NO_MEMORY;
-                pStreamedPosition = (uGnssPrivateStreamedPosition_t *) pUPortMalloc(sizeof(*pStreamedPosition));
-                if (pStreamedPosition != NULL) {
-                    memset(pStreamedPosition, 0, sizeof(*pStreamedPosition));
-                    // Put defaults in place so that we know
-                    // to change things back only if necessary
-                    pStreamedPosition->measurementPeriodMs = -1;
-                    pStreamedPosition->navigationCount = -1;
-                    pStreamedPosition->messageRate = -1;
-                    pStreamedPosition->asyncHandle = -1;
-                    pStreamedPosition->pCallback = pCallback;
-                    pInstance->pStreamedPosition = pStreamedPosition;
-                    errorCode = (int32_t) U_ERROR_COMMON_SUCCESS;
-                    if (rateMs >= 0) {
-                        // Get the existing measurement/navigation rate
-                        // and, if it is not rateMs, set it to rateMs
-                        if (uGnssPrivateGetRate(pInstance,
-                                                &measurementPeriodMs,
-                                                &navigationCount,
-                                                NULL) != rateMs) {
-                            // Set the measurement rate, with a navigation count of 1
-                            // and leaving the time system unchanged
-                            errorCode = uGnssPrivateSetRate(pInstance, rateMs, 1,
-                                                            U_GNSS_TIME_SYSTEM_NONE);
-                            if (errorCode == 0) {
-                                pStreamedPosition->measurementPeriodMs = measurementPeriodMs;
-                                pStreamedPosition->navigationCount = navigationCount;
-                            }
-                        }
-                    }
-                    if (errorCode == 0) {
-                        // Make sure that the UBX-NAV-PVT message
-                        // is enabled at once per measurement
-                        if (U_GNSS_PRIVATE_HAS(pInstance->pModule,
-                                               U_GNSS_PRIVATE_FEATURE_OLD_CFG_API)) {
-                            messageRate = uGnssPrivateGetMsgRate(pInstance,
-                                                                 &ubxNavPvtMessageId);
-                            if (messageRate != 1) {
-                                errorCode = uGnssPrivateSetMsgRate(pInstance,
-                                                                   &ubxNavPvtMessageId, 1);
+                if (pInstance->pStreamedPosition == NULL) {
+                    // Malloc memory to copy the parameters into:
+                    // this memory will be free'd when
+                    // uGnssPosGetStreamedStop() is called
+                    pStreamedPosition = (uGnssPrivateStreamedPosition_t *) pUPortMalloc(sizeof(*pStreamedPosition));
+                    if (pStreamedPosition != NULL) {
+                        pInstance->pStreamedPosition = pStreamedPosition;
+                        memset(pStreamedPosition, 0, sizeof(*pStreamedPosition));
+                        errorCode = (int32_t) U_ERROR_COMMON_SUCCESS;
+                        // Put defaults in place so that we know
+                        // to change things back only if necessary
+                        pStreamedPosition->measurementPeriodMs = -1;
+                        pStreamedPosition->navigationCount = -1;
+                        pStreamedPosition->messageRate = -1;
+                        pStreamedPosition->asyncHandle = -1;
+                        pStreamedPosition->pCallback = pCallback;
+                        if (rateMs >= 0) {
+                            // Get the existing measurement/navigation rate
+                            // and, if it is not rateMs, set it to rateMs
+                            if (uGnssPrivateGetRate(pInstance,
+                                                    &measurementPeriodMs,
+                                                    &navigationCount,
+                                                    NULL) != rateMs) {
+                                // Set the measurement rate, with a navigation count of 1
+                                // and leaving the time system unchanged
+                                errorCode = uGnssPrivateSetRate(pInstance, rateMs, 1,
+                                                                U_GNSS_TIME_SYSTEM_NONE);
                                 if (errorCode == 0) {
-                                    pStreamedPosition->messageRate = messageRate;
-                                }
-                            }
-                        } else {
-                            if (uGnssCfgPrivateValGetListAlloc(pInstance,
-                                                               &keyId, 1,
-                                                               &pCfgVal,
-                                                               U_GNSS_CFG_VAL_LAYER_RAM) == 1) {
-                                messageRate = (int32_t) pCfgVal->value;
-                                uPortFree(pCfgVal);
-                            }
-                            if (messageRate != (int32_t) cfgVal.value) {
-                                errorCode = uGnssCfgPrivateValSetList(pInstance, &cfgVal, 1,
-                                                                      U_GNSS_CFG_VAL_TRANSACTION_NONE,
-                                                                      U_GNSS_CFG_LAYERS_SET);
-                                if (errorCode == 0) {
-                                    pStreamedPosition->messageRate = messageRate;
+                                    pStreamedPosition->measurementPeriodMs = measurementPeriodMs;
+                                    pStreamedPosition->navigationCount = navigationCount;
                                 }
                             }
                         }
-                    }
-                    if (errorCode == 0) {
+                        if (errorCode == 0) {
+                            // Make sure that the UBX-NAV-PVT message
+                            // is enabled at once per measurement
+                            if (U_GNSS_PRIVATE_HAS(pInstance->pModule,
+                                                   U_GNSS_PRIVATE_FEATURE_OLD_CFG_API)) {
+                                messageRate = uGnssPrivateGetMsgRate(pInstance,
+                                                                     &ubxNavPvtMessageId);
+                                if (messageRate != 1) {
+                                    errorCode = uGnssPrivateSetMsgRate(pInstance,
+                                                                       &ubxNavPvtMessageId, 1);
+                                    if (errorCode == 0) {
+                                        pStreamedPosition->messageRate = messageRate;
+                                    }
+                                }
+                            } else {
+                                if (uGnssCfgPrivateValGetListAlloc(pInstance,
+                                                                   &keyId, 1,
+                                                                   &pCfgVal,
+                                                                   U_GNSS_CFG_VAL_LAYER_RAM) == 1) {
+                                    messageRate = (int32_t) pCfgVal->value;
+                                    uPortFree(pCfgVal);
+                                }
+                                if (messageRate != (int32_t) cfgVal.value) {
+                                    errorCode = uGnssCfgPrivateValSetList(pInstance, &cfgVal, 1,
+                                                                          U_GNSS_CFG_VAL_TRANSACTION_NONE,
+                                                                          U_GNSS_CFG_LAYERS_SET);
+                                    if (errorCode == 0) {
+                                        pStreamedPosition->messageRate = messageRate;
+                                    }
+                                }
+                            }
+                        }
+                        if (errorCode == 0) {
 #ifdef U_CFG_SARA_R5_M8_WORKAROUND
-                        if (uGnssPrivateGetIntermediateAtHandle(pInstance) != NULL) {
-                            // Temporary change: on prototype versions of the
-                            // SARA-R510M8S module (production week (printed on the
-                            // module label, upper right) earlier than 20/27)
-                            // the LNA in the GNSS chip is not automatically switched
-                            // on by the firmware in the cellular module, so we need
-                            // to switch it on ourselves by sending UBX-CFG-ANT
-                            // with contents 02000f039
-                            message[0] = 0x02;
-                            message[1] = 0;
-                            message[2] = 0xf0;
-                            message[3] = 0x39;
-                            uGnssPrivateSendUbxMessage(pInstance, 0x06, 0x13,
-                                                       (const char *) message, 4);
-                        }
+                            if (uGnssPrivateGetIntermediateAtHandle(pInstance) != NULL) {
+                                // Temporary change: on prototype versions of the
+                                // SARA-R510M8S module (production week (printed on the
+                                // module label, upper right) earlier than 20/27)
+                                // the LNA in the GNSS chip is not automatically switched
+                                // on by the firmware in the cellular module, so we need
+                                // to switch it on ourselves by sending UBX-CFG-ANT
+                                // with contents 02000f039
+                                message[0] = 0x02;
+                                message[1] = 0;
+                                message[2] = 0xf0;
+                                message[3] = 0x39;
+                                uGnssPrivateSendUbxMessage(pInstance, 0x06, 0x13,
+                                                           (const char *) message, 4);
+                            }
 #endif
-                        pInstance->printUbxMessages = temp;
-                        // Start a message received for the UBX-NAV-PVT message,
-                        // which will ultimately call pCallback
-                        errorCode = uGnssMsgPrivateReceiveStart(pInstance,
-                                                                &ubxNavPvtMessageId,
-                                                                messageCallback,
-                                                                pInstance);
-                        if (errorCode >= 0) {
-                            // And we're off
-                            pStreamedPosition->gnssHandle = gnssHandle;
-                            pStreamedPosition->asyncHandle = errorCode;
-                            errorCode = 0;
+                            // Start a message received for the UBX-NAV-PVT message,
+                            // which will ultimately call pCallback
+                            errorCode = uGnssMsgPrivateReceiveStart(pInstance,
+                                                                    &ubxNavPvtMessageId,
+                                                                    messageCallback,
+                                                                    pInstance);
+                            if (errorCode >= 0) {
+                                // And we're off
+                                pStreamedPosition->gnssHandle = gnssHandle;
+                                pStreamedPosition->asyncHandle = errorCode;
+                            } else {
+                                // If we couldn't create the asynchronous
+                                // message receiver, clean up
+                                uGnssPrivateCleanUpStreamedPos(pInstance);
+                            }
                         } else {
-                            // If we couldn't create the asynchronous
-                            // message receiver, clean up
+                            // If we couldn't set the rate, clean up
                             uGnssPrivateCleanUpStreamedPos(pInstance);
                         }
-                    } else {
-                        // If we couldn't set the rate, clean up
-                        uGnssPrivateCleanUpStreamedPos(pInstance);
                     }
                 }
-                pInstance->printUbxMessages = temp;
             }
         }
-
-        U_PORT_MUTEX_UNLOCK(gUGnssPrivateMutex);
     }
+
+    U_PORT_MUTEX_UNLOCK(gUGnssPrivateMutex);
 
     return errorCode;
 }
@@ -1015,7 +921,7 @@ int32_t uGnssPosGetRrlp(uDeviceHandle_t gnssHandle, char *pBuffer,
                     *pBufferUint8 = 0xb5;
                     *(pBufferUint8 + 1) = 0x62;
                     *(pBufferUint8 + 2) = 0x02;
-                    *(pBufferUint8 + 3) = (char) messageClass;
+                    *(pBufferUint8 + 3) = messageClass;
                     // Little-endian length of the body
                     *(pBufferUint8 + 4) = (uint8_t) numBytes;
                     *(pBufferUint8 + 5) = (uint8_t) ((uint32_t) numBytes >> 8);
